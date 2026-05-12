@@ -40,14 +40,23 @@ log_step() {
 log_info "Installing Cert Manager on VKS Cluster: $CLUSTER_NAME"
 echo ""
 
-# Step 1: Verify Supervisor context is valid
+# Step 1: Verify Supervisor context is valid (not in VKS cluster context)
 log_step "Verifying Supervisor context..."
-if ! kubectl config current-context &>/dev/null; then
-    log_error "No valid kubectl context. Please run 'login-ns1' first."
+
+CURRENT_CONTEXT=$(kubectl config current-context 2>/dev/null || echo "")
+if [[ -z "$CURRENT_CONTEXT" ]]; then
+    log_error "No valid kubectl context. Please run 'ns1-login' first."
     exit 1
 fi
 
-CURRENT_CONTEXT=$(kubectl config current-context)
+# Check if we're accidentally in the VKS cluster context
+if [[ "$CURRENT_CONTEXT" == *"$CLUSTER_NAME"* ]] || [[ "$CURRENT_CONTEXT" == "$CLUSTER_CONTEXT:$CLUSTER_NAME" ]]; then
+    log_warn "You are currently in the VKS cluster context: $CURRENT_CONTEXT"
+    log_error "This script must be run from the Supervisor context"
+    log_info "Please run: ./ns1-login"
+    log_info "Then run: ./vks1-install-cert-manager"
+    exit 1
+fi
 log_info "Current context: $CURRENT_CONTEXT"
 
 # Step 2: Verify VKS cluster exists
@@ -57,16 +66,38 @@ if ! kubectl get clusters "$CLUSTER_NAME" &>/dev/null; then
     exit 1
 fi
 
-CLUSTER_AVAILABLE=$(kubectl get clusters "$CLUSTER_NAME" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "False")
-if [[ "$CLUSTER_AVAILABLE" != "True" ]]; then
-    log_warn "VKS cluster is not fully ready. Status: $CLUSTER_AVAILABLE"
-    log_warn "Proceeding anyway, but installation may fail if cluster is not ready."
+CLUSTER_AVAILABLE=$(kubectl get clusters "$CLUSTER_NAME" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "")
+ADDONS_RECONCILED=$(kubectl get clusters "$CLUSTER_NAME" -o jsonpath='{.status.conditions[?(@.type=="AddonsReconciled")].status}' 2>/dev/null || echo "")
+
+if [[ "$CLUSTER_AVAILABLE" != "True" || "$ADDONS_RECONCILED" != "True" ]]; then
+    log_warn "VKS cluster is not fully ready"
+    log_warn "  Available: $CLUSTER_AVAILABLE | AddonsReconciled: $ADDONS_RECONCILED"
+    log_warn "Please wait for cluster to stabilize and try again"
+    log_info "Check status with: ./ns1-check-vks1"
+    exit 1
 fi
-log_info "VKS cluster verified: $CLUSTER_NAME"
+log_info "✓ VKS cluster verified: $CLUSTER_NAME"
 
 echo ""
 
-# Step 3: List available cert-manager versions
+# Step 3: Check if cert-manager is already installed
+log_step "Checking if cert-manager is already installed..."
+EXISTING_CERT_MANAGER=$(vcf addon install list --cluster-name "$CLUSTER_NAME" -n "$SUPERVISOR_NAMESPACE_NAME" 2>/dev/null | grep cert-manager || echo "")
+
+if [[ ! -z "$EXISTING_CERT_MANAGER" ]]; then
+    log_info "Cert-manager is already installed on cluster: $CLUSTER_NAME"
+    echo ""
+    log_step "Addon status:"
+    echo "$EXISTING_CERT_MANAGER"
+    echo ""
+    log_info "To check detailed status, run: ./ns1-check-cert-manager"
+    log_info "To remove cert-manager, run: ./ns1-delete-cert-manager-vks1"
+    exit 0
+fi
+
+echo ""
+
+# Step 4: List available cert-manager versions
 log_step "Fetching available cert-manager versions..."
 VERSIONS_OUTPUT=$(vcf addon available list cert-manager 2>&1 || echo "")
 
@@ -91,7 +122,7 @@ log_info "Latest cert-manager version available: $LATEST_VERSION"
 log_info "Addon release name: $ADDON_RELEASE_NAME"
 echo ""
 
-# Step 4: Generate data values file
+# Step 5: Generate data values file
 log_step "Generating cert-manager data values file..."
 DATA_VALUES_FILE="cert-manager-data-values.yaml"
 
@@ -103,7 +134,7 @@ fi
 log_info "Data values file created: $DATA_VALUES_FILE"
 echo ""
 
-# Step 5: Switch to VKS cluster context
+# Step 6: Switch to VKS cluster context
 log_step "Switching to VKS cluster context..."
 if ! vcf context use "$SUPERVISOR_CONTEXT:$SUPERVISOR_NAMESPACE_NAME" 2>/dev/null; then
     log_error "Failed to switch to Supervisor context"
@@ -113,7 +144,7 @@ log_info "Switched to context: $SUPERVISOR_CONTEXT:$SUPERVISOR_NAMESPACE_NAME"
 
 echo ""
 
-# Step 6: Install cert-manager addon
+# Step 7: Install cert-manager addon
 log_step "Installing cert-manager addon..."
 log_info "This may take a few minutes..."
 echo ""
@@ -133,7 +164,7 @@ fi
 
 echo ""
 
-# Step 7: Monitor installation progress
+# Step 8: Monitor installation progress
 log_step "Monitoring cert-manager installation..."
 INSTALLATION_TIMEOUT=300  # 5 minutes
 POLL_INTERVAL=5
@@ -177,7 +208,7 @@ if [[ "$READY" == "true" ]]; then
     vcf addon install list --cluster-name "$CLUSTER_NAME" -n "$SUPERVISOR_NAMESPACE_NAME" | grep cert-manager
     echo ""
     
-    # Step 8: Verify cert-manager in the cluster
+    # Step 9: Verify cert-manager in the cluster
     log_step "Verifying cert-manager pods in the cluster..."
     
     # Switch to VKS cluster context

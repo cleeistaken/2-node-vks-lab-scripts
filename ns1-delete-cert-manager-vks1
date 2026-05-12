@@ -39,15 +39,23 @@ log_step() {
 log_info "Deleting Cert Manager from VKS Cluster: $CLUSTER_NAME"
 echo ""
 
-# Step 1: Verify Supervisor context is valid
+# Step 1: Verify Supervisor context is valid (not in VKS cluster context)
 log_step "Verifying Supervisor context..."
-if ! kubectl config current-context &>/dev/null; then
-    log_error "No valid kubectl context. Please run 'login-ns1' first."
+
+CURRENT_CONTEXT=$(kubectl config current-context 2>/dev/null || echo "")
+if [[ -z "$CURRENT_CONTEXT" ]]; then
+    log_error "No valid kubectl context. Please run 'ns1-login' first."
     exit 1
 fi
 
-CURRENT_CONTEXT=$(kubectl config current-context)
-log_info "Current context: $CURRENT_CONTEXT"
+# Check if we're accidentally in the VKS cluster context
+if [[ "$CURRENT_CONTEXT" == *"$CLUSTER_NAME"* ]] || [[ "$CURRENT_CONTEXT" == "$CLUSTER_CONTEXT:$CLUSTER_NAME" ]]; then
+    log_warn "You are currently in the VKS cluster context: $CURRENT_CONTEXT"
+    log_error "This script must be run from the Supervisor context"
+    log_info "Please run: ./ns1-login"
+    log_info "Then run: ./vks1-delete-cert-manager"
+    exit 1
+fi
 
 echo ""
 

@@ -1,0 +1,429 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Load configuration
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${SCRIPT_DIR}/vks-lab.conf"
+
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "Error: Configuration file not found at $CONFIG_FILE"
+    exit 1
+fi
+
+source "$CONFIG_FILE"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+log_info() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+log_step() {
+    echo -e "${BLUE}[STEP]${NC} $1"
+}
+
+log_success() {
+    echo -e "${GREEN}✅${NC} $1"
+}
+
+log_failed() {
+    echo -e "${RED}❌${NC} $1"
+}
+
+# Parse command line arguments
+WATCH_MODE=false
+if [[ $# -gt 0 && "$1" == "--watch" ]]; then
+    WATCH_MODE=true
+fi
+
+# Function to check cluster readiness
+check_cluster_readiness() {
+    if command -v jq &>/dev/null; then
+        READY=$(kubectl get cluster "$CLUSTER_NAME" -o json 2>/dev/null | jq -r '.status.conditions[] | select(.type=="Available") | .status' 2>/dev/null | head -1 || echo "Unknown")
+        RECONCILED=$(kubectl get cluster "$CLUSTER_NAME" -o json 2>/dev/null | jq -r '.status.conditions[] | select(.type=="TopologyReconciled") | .status' 2>/dev/null | head -1 || echo "Unknown")
+        ADDONS_READY=$(kubectl get cluster "$CLUSTER_NAME" -o json 2>/dev/null | jq -r '.status.conditions[] | select(.type=="AddonsReconciled") | .status' 2>/dev/null | head -1 || echo "Unknown")
+        PAUSED=$(kubectl get cluster "$CLUSTER_NAME" -o json 2>/dev/null | jq -r '.status.conditions[] | select(.type=="Paused") | .status' 2>/dev/null | head -1 || echo "False")
+        PHASE=$(kubectl get cluster "$CLUSTER_NAME" -o json 2>/dev/null | jq -r '.status.phase' 2>/dev/null || echo "Unknown")
+        CP_READY=$(kubectl get cluster "$CLUSTER_NAME" -o json 2>/dev/null | jq -r '.status.controlPlane.readyReplicas > 0 | if . then "True" else "False" end' 2>/dev/null || echo "Unknown")
+        INFRA_READY=$(kubectl get cluster "$CLUSTER_NAME" -o json 2>/dev/null | jq -r '.status.initialization.infrastructureProvisioned' 2>/dev/null || echo "Unknown")
+    else
+        # Fallback without jq
+        READY=$(kubectl get cluster "$CLUSTER_NAME" -o yaml 2>/dev/null | grep -A 1 'type: Available' | grep 'status:' | awk '{print $2}' || echo "Unknown")
+        RECONCILED=$(kubectl get cluster "$CLUSTER_NAME" -o yaml 2>/dev/null | grep -A 1 'type: TopologyReconciled' | grep 'status:' | awk '{print $2}' || echo "Unknown")
+        ADDONS_READY=$(kubectl get cluster "$CLUSTER_NAME" -o yaml 2>/dev/null | grep -A 1 'type: AddonsReconciled' | grep 'status:' | awk '{print $2}' || echo "Unknown")
+        PAUSED=$(kubectl get cluster "$CLUSTER_NAME" -o yaml 2>/dev/null | grep -A 1 'type: Paused' | grep 'status:' | awk '{print $2}' || echo "False")
+        PHASE=$(kubectl get cluster "$CLUSTER_NAME" -o yaml 2>/dev/null | grep '^  phase:' | awk '{print $2}' || echo "Unknown")
+        CP_READY=$(kubectl get cluster "$CLUSTER_NAME" -o yaml 2>/dev/null | grep 'readyReplicas:' | head -1 | awk '{if ($2 > 0) print "True"; else print "False"}' || echo "Unknown")
+        INFRA_READY=$(kubectl get cluster "$CLUSTER_NAME" -o yaml 2>/dev/null | grep 'infrastructureProvisioned:' | awk '{print $2}' || echo "Unknown")
+    fi
+}
+
+# Determine if cluster is ready
+is_cluster_ready() {
+    [[ "$READY" == "True" ]] && [[ "$RECONCILED" == "True" ]] && [[ "$ADDONS_READY" == "True" ]] && [[ "$PAUSED" != "True" ]]
+}
+
+# Verify we're logged into the Supervisor (not in VKS cluster context)
+verify_supervisor_context() {
+    if ! kubectl get ns &>/dev/null; then
+        log_error "Not connected to Supervisor. Please run 'ns1-login' first."
+        exit 1
+    fi
+    
+    # Check if we're accidentally in the VKS cluster context
+    CURRENT_CONTEXT=$(kubectl config current-context 2>/dev/null || echo "")
+    if [[ "$CURRENT_CONTEXT" == *"$CLUSTER_NAME"* ]] || [[ "$CURRENT_CONTEXT" == "$CLUSTER_CONTEXT:$CLUSTER_NAME" ]]; then
+        log_warn "You are currently in the VKS cluster context: $CURRENT_CONTEXT"
+        log_error "This script must be run from the Supervisor context"
+        log_info "Please run: ./ns1-login"
+        log_info "Then run: ./vks1-check-ready"
+        exit 1
+    fi
+}
+
+# Check if cluster exists
+check_cluster_exists() {
+    if ! kubectl get clusters "$CLUSTER_NAME" &>/dev/null; then
+        log_error "VKS cluster not found: $CLUSTER_NAME"
+        log_info "Create a cluster first: ./vks1-create-1.35"
+        exit 1
+    fi
+}
+
+# Get cluster status
+get_cluster_status() {
+    kubectl get cluster "$CLUSTER_NAME" -o jsonpath='{.status}' 2>/dev/null || echo ""
+}
+
+log_info "Checking VKS Cluster Status: $CLUSTER_NAME"
+echo ""
+
+# Step 1: Verify context
+log_step "Verifying Supervisor context..."
+verify_supervisor_context
+log_info "Supervisor context verified"
+
+echo ""
+
+# Step 2: Check if cluster exists
+log_step "Verifying cluster exists..."
+check_cluster_exists
+log_info "Cluster found: $CLUSTER_NAME"
+
+echo ""
+
+# Handle watch mode
+if [[ "$WATCH_MODE" == "true" ]]; then
+    log_step "Starting watch mode (Ctrl+C to stop, timeout: 20 minutes)"
+    echo ""
+    
+    WATCH_TIMEOUT=1200  # 20 minutes in seconds
+    WATCH_INTERVAL=5    # Check every 5 seconds
+    ELAPSED=0
+    
+    while [[ $ELAPSED -lt $WATCH_TIMEOUT ]]; do
+        # Get current status
+        check_cluster_readiness
+        
+        # Clear previous line for cleaner output (every 5 seconds)
+        if [[ $((ELAPSED % 5)) -eq 0 ]]; then
+            TIMESTAMP=$(date '+%H:%M:%S')
+            STATUS_SYMBOLS=""
+            
+            # Build status symbols
+            if [[ "$READY" == "True" ]]; then
+                STATUS_SYMBOLS="${STATUS_SYMBOLS}✓"
+            else
+                STATUS_SYMBOLS="${STATUS_SYMBOLS}✗"
+            fi
+            
+            if [[ "$RECONCILED" == "True" ]]; then
+                STATUS_SYMBOLS="${STATUS_SYMBOLS}✓"
+            else
+                STATUS_SYMBOLS="${STATUS_SYMBOLS}✗"
+            fi
+            
+            if [[ "$ADDONS_READY" == "True" ]]; then
+                STATUS_SYMBOLS="${STATUS_SYMBOLS}✓"
+            else
+                STATUS_SYMBOLS="${STATUS_SYMBOLS}✗"
+            fi
+            
+            # Print watch status
+            printf "\r[%s] A:%s R:%s AD:%s | Phase:%s | Elapsed: %3ds/%ds" \
+                "$TIMESTAMP" "$READY" "$RECONCILED" "$ADDONS_READY" "$PHASE" "$ELAPSED" "$WATCH_TIMEOUT"
+        fi
+        
+        # Check if ready
+        if is_cluster_ready; then
+            echo ""
+            echo ""
+            log_success "CLUSTER IS READY!"
+            echo ""
+            log_info "Cluster became ready after $ELAPSED seconds"
+            echo ""
+            break
+        fi
+        
+        sleep $WATCH_INTERVAL
+        ((ELAPSED += WATCH_INTERVAL))
+    done
+    
+    echo ""
+    
+    # Check if we timed out or became ready
+    if is_cluster_ready; then
+        log_success "Cluster readiness check passed!"
+        log_info "Available: $READY | TopologyReconciled: $RECONCILED | AddonsReconciled: $ADDONS_READY"
+        exit 0
+    elif [[ $ELAPSED -ge $WATCH_TIMEOUT ]]; then
+        log_warn "Watch timeout reached after 20 minutes"
+        log_error "Cluster is not yet ready"
+        log_info "Current status: Available=$READY | Reconciled=$RECONCILED | Addons=$ADDONS_READY"
+        echo ""
+        log_info "Run without --watch for detailed status and diagnostic commands"
+        exit 1
+    fi
+fi
+
+echo ""
+
+# Step 3: Get cluster details
+log_step "Checking cluster conditions..."
+
+# Get all conditions - Correct condition types based on actual v1beta2 API
+# Actual condition types: Available, TopologyReconciled, AddonsReconciled, etc.
+check_cluster_readiness
+
+# Get message fields for conditions
+if command -v jq &>/dev/null; then
+    READY_MSG=$(kubectl get cluster "$CLUSTER_NAME" -o json 2>/dev/null | jq -r '.status.conditions[] | select(.type=="Available") | .message' 2>/dev/null | head -1 || echo "N/A")
+    RECONCILED_MSG=$(kubectl get cluster "$CLUSTER_NAME" -o json 2>/dev/null | jq -r '.status.conditions[] | select(.type=="TopologyReconciled") | .message' 2>/dev/null | head -1 || echo "N/A")
+    ADDONS_MSG=$(kubectl get cluster "$CLUSTER_NAME" -o json 2>/dev/null | jq -r '.status.conditions[] | select(.type=="AddonsReconciled") | .message' 2>/dev/null | head -1 || echo "N/A")
+else
+    # Fallback without jq
+    READY_MSG=$(kubectl get cluster "$CLUSTER_NAME" -o yaml 2>/dev/null | grep -A 1 'type: Available' | grep 'message:' | cut -d':' -f2- | xargs || echo "N/A")
+    RECONCILED_MSG=$(kubectl get cluster "$CLUSTER_NAME" -o yaml 2>/dev/null | grep -A 1 'type: TopologyReconciled' | grep 'message:' | cut -d':' -f2- | xargs || echo "N/A")
+    ADDONS_MSG=$(kubectl get cluster "$CLUSTER_NAME" -o yaml 2>/dev/null | grep -A 1 'type: AddonsReconciled' | grep 'message:' | cut -d':' -f2- | xargs || echo "N/A")
+fi
+
+# Get additional info from status
+if command -v jq &>/dev/null; then
+    PHASE=$(kubectl get cluster "$CLUSTER_NAME" -o json 2>/dev/null | jq -r '.status.phase' 2>/dev/null || echo "Unknown")
+    CP_READY=$(kubectl get cluster "$CLUSTER_NAME" -o json 2>/dev/null | jq -r '.status.controlPlane.readyReplicas > 0 | if . then "True" else "False" end' 2>/dev/null || echo "Unknown")
+    INFRA_READY=$(kubectl get cluster "$CLUSTER_NAME" -o json 2>/dev/null | jq -r '.status.initialization.infrastructureProvisioned' 2>/dev/null || echo "Unknown")
+else
+    PHASE=$(kubectl get cluster "$CLUSTER_NAME" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+    # Check if controlPlane readyReplicas > 0
+    CP_REPLICAS=$(kubectl get cluster "$CLUSTER_NAME" -o jsonpath='{.status.controlPlane.readyReplicas}' 2>/dev/null || echo "0")
+    if [[ "$CP_REPLICAS" -gt 0 ]]; then
+        CP_READY="True"
+    else
+        CP_READY="False"
+    fi
+    INFRA_READY=$(kubectl get cluster "$CLUSTER_NAME" -o jsonpath='{.status.initialization.infrastructureProvisioned}' 2>/dev/null || echo "Unknown")
+fi
+
+echo ""
+
+# Display detailed status
+echo -e "${CYAN}=== Cluster Conditions ===${NC}"
+echo ""
+
+# Available Condition (was "Ready")
+if [[ "$READY" == "True" ]]; then
+    log_success "Available: $READY"
+else
+    log_failed "Available: $READY"
+fi
+[[ ! -z "$READY_MSG" && "$READY_MSG" != "N/A" ]] && echo "         Message: $READY_MSG"
+
+# TopologyReconciled Condition (was "Reconciled")
+if [[ "$RECONCILED" == "True" ]]; then
+    log_success "TopologyReconciled: $RECONCILED"
+else
+    log_failed "TopologyReconciled: $RECONCILED"
+fi
+[[ ! -z "$RECONCILED_MSG" && "$RECONCILED_MSG" != "N/A" ]] && echo "         Message: $RECONCILED_MSG"
+
+# AddonsReconciled Condition
+if [[ "$ADDONS_READY" == "True" ]]; then
+    log_success "AddonsReconciled: $ADDONS_READY"
+else
+    log_failed "AddonsReconciled: $ADDONS_READY"
+fi
+[[ ! -z "$ADDONS_MSG" && "$ADDONS_MSG" != "N/A" ]] && echo "         Message: $ADDONS_MSG"
+
+# Paused Status
+if [[ "$PAUSED" == "True" ]]; then
+    log_warn "Paused: $PAUSED (cluster is paused)"
+else
+    log_success "Paused: $PAUSED (cluster is active)"
+fi
+
+echo ""
+echo -e "${CYAN}=== Additional Status ===${NC}"
+echo ""
+
+# Phase
+echo "Phase: $PHASE"
+
+# CP Ready
+echo "Control Plane Ready: $CP_READY"
+
+# Infrastructure Ready
+echo "Infrastructure Ready: $INFRA_READY"
+
+echo ""
+
+# Step 4: Check node status
+log_step "Checking node status..."
+
+CLUSTER_NODES=$(kubectl get nodes -o jsonpath='{.items | length}' 2>/dev/null || echo "0")
+READY_NODES=$(kubectl get nodes -o jsonpath='{range .items[?(@.status.conditions[?(@.type=="Ready")].status=="True")]}{.metadata.name}{"\n"}{end}' 2>/dev/null | wc -l)
+
+echo "Nodes Ready: $READY_NODES/$CLUSTER_NODES"
+
+if [[ $CLUSTER_NODES -gt 0 ]]; then
+    echo ""
+    kubectl get nodes -o wide
+fi
+
+echo ""
+
+# Step 5: Check pod status
+log_step "Checking critical addon pods..."
+
+echo ""
+
+# Check Antrea
+ANTREA_READY=$(kubectl get deployment -n kube-system antrea-controller -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "Not Found")
+if [[ "$ANTREA_READY" == "True" ]]; then
+    log_success "Antrea (CNI): Ready"
+else
+    log_failed "Antrea (CNI): $ANTREA_READY"
+fi
+
+# Check vSphere CSI
+CSI_READY=$(kubectl get deployment -n vmware-system-csi vsphere-csi-controller -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "Not Found")
+if [[ "$CSI_READY" == "True" ]]; then
+    log_success "vSphere-CSI (Storage): Ready"
+else
+    log_failed "vSphere-CSI (Storage): $CSI_READY"
+fi
+
+echo ""
+
+# Step 6: Determine overall readiness
+log_step "Determining overall cluster readiness..."
+
+echo ""
+
+if [[ "$READY" == "True" && "$RECONCILED" == "True" && "$ADDONS_RECONCILED" == "True" && "$PAUSED" != "True" ]]; then
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║     CLUSTER IS READY FOR USE!          ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    log_success "All conditions satisfied"
+    log_info "Cluster is ready for operations, upgrades, or deployments"
+    echo ""
+    exit 0
+elif [[ "$READY" == "True" && "$ADDONS_RECONCILED" != "True" ]]; then
+    echo -e "${YELLOW}╔════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║     CLUSTER PARTIALLY READY            ║${NC}"
+    echo -e "${YELLOW}║  (Waiting for addon reconciliation)    ║${NC}"
+    echo -e "${YELLOW}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    log_warn "Cluster is Available but addons are still reconciling"
+    log_warn "This is normal after cluster creation or upgrade"
+    log_info "Typical wait time: 30-120 seconds"
+    log_info "Retry in a few moments with: ./vks1-check-ready"
+    echo ""
+    exit 1
+elif [[ "$READY" != "True" ]]; then
+    echo -e "${RED}╔════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║     CLUSTER NOT READY                  ║${NC}"
+    echo -e "${RED}║  (Infrastructure still initializing)   ║${NC}"
+    echo -e "${RED}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    log_failed "Cluster is not yet Available"
+    log_warn "Wait for cluster initialization to complete"
+    log_info "Check status with: kubectl describe cluster $CLUSTER_NAME"
+    echo ""
+    exit 1
+elif [[ "$PAUSED" == "True" ]]; then
+    echo -e "${YELLOW}╔════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║     CLUSTER IS PAUSED                  ║${NC}"
+    echo -e "${YELLOW}║  (Maintenance or manual pause)         ║${NC}"
+    echo -e "${YELLOW}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    log_warn "Cluster is paused and cannot be used"
+    log_warn "Resume the cluster before proceeding"
+    echo ""
+    exit 1
+else
+    echo -e "${YELLOW}╔════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║     CLUSTER STATUS UNKNOWN             ║${NC}"
+    echo -e "${YELLOW}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    log_warn "Unable to determine cluster readiness"
+    log_info "Check full status with: kubectl describe cluster $CLUSTER_NAME"
+    echo ""
+    exit 2
+fi
+
+echo ""
+echo "════════════════════════════════════════════════════════════════"
+echo "🔧 Diagnostic Commands for Addon Reconciliation Issues"
+echo "════════════════════════════════════════════════════════════════"
+echo ""
+echo "To check addon reconciliation status, run these commands:"
+echo ""
+echo "1. Get detailed cluster status:"
+echo "   kubectl get cluster $CLUSTER_NAME -o yaml"
+echo ""
+echo "2. Check all cluster conditions:"
+echo "   kubectl get cluster $CLUSTER_NAME -o jsonpath='{.status.conditions[*]}' | jq"
+echo ""
+echo "3. Get AddonsReconciled condition specifically:"
+echo "   kubectl get cluster $CLUSTER_NAME -o jsonpath='{.status.conditions[?(@.type==\"AddonsReconciled\")]}'  | jq"
+echo ""
+echo "4. Check addon resources (if available):"
+echo "   kubectl get addons -A"
+echo "   kubectl describe addon -A"
+echo ""
+echo "5. Check Antrea (CNI) plugin status:"
+echo "   kubectl get pods -n kube-system -l app=antrea"
+echo "   kubectl describe daemonset/antrea-agent -n kube-system"
+echo "   kubectl logs -n kube-system -l app=antrea --tail=50"
+echo ""
+echo "6. Check vSphere-CSI (Storage) status:"
+echo "   kubectl get pods -n vmware-system-csi"
+echo "   kubectl describe deployment/vsphere-csi-controller -n vmware-system-csi"
+echo "   kubectl logs -n vmware-system-csi -l app=vsphere-csi-controller --tail=50"
+echo ""
+echo "7. Check if cluster is in reconciliation loop:"
+echo "   kubectl get events -A | grep -i addon"
+echo "   kubectl get events -A | grep -i reconcil"
+echo ""
+echo "8. Monitor addon reconciliation in real-time:"
+echo "   watch 'kubectl get cluster $CLUSTER_NAME -o jsonpath=\"{.status.conditions}\" | jq'"
+echo ""
+echo "════════════════════════════════════════════════════════════════"
+echo ""
+

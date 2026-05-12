@@ -10,9 +10,9 @@ A comprehensive collection of shell scripts that automate common tasks in the VM
 
 ```bash
 cd "/Users/charlesl/Documents/Development/2 node vks scripts"
-./vks-help                    # View quick reference
-./login-ns1                   # Login to Supervisor
-./create-vks1                 # Create a VKS cluster
+./ns1-login                      # Login to Supervisor
+./ns1-create-vks1-1.35          # Create a VKS cluster with v1.35
+./ns1-login-vks1                # Login to VKS cluster
 ```
 
 ---
@@ -34,9 +34,9 @@ cd "/Users/charlesl/Documents/Development/2 node vks scripts"
 
 ### For New Users
 
-1. **Run the quick reference:** `./vks-help`
-2. **Test connectivity:** `./login-ns1`
-3. **Create your first cluster:** `./create-vks1`
+1. **Test connectivity:** `./ns1-login`
+2. **Create your first cluster:** `./ns1-create-vks1-1.35`
+3. **Login to cluster:** `./ns1-login-vks1`
 
 ### For Experienced Users
 
@@ -61,29 +61,24 @@ Before using these scripts, verify you have:
 ```
 2 node vks scripts/
 ├── Configuration
-│   └── vks-lab.conf                         # ⚙️  Central config (passwords, IPs, names)
+│   └── vks-lab.conf                              # ⚙️  Central config (passwords, IPs, names)
 │
 ├── Main Scripts (Run these)
-│   ├── ns1-login                            # 🔐 Login to Supervisor namespace
-│   ├── vks1-login                           # 🔐 Login to VKS cluster
-│   ├── vks1-create                          # ✨ Create a new VKS cluster
-│   ├── vks1-delete                          # 🗑️  Delete VKS cluster
-│   ├── select-context                       # 🔄 Interactive context manager
-│   ├── vks1-install-cert-manager            # 📦 Install cert-manager addon
-│   └── vks1-delete-cert-manager             # 📦 Remove cert-manager addon
+│   ├── ns1-login                                 # 🔐 Login to Supervisor namespace
+│   ├── ns1-login-vks1                            # 🔐 Login to VKS cluster
+│   ├── ns1-check-namespace                       # 🔍 Check Supervisor namespace configuration
+│   ├── ns1-create-vks1-1.35                      # ✨ Create/upgrade VKS cluster to v1.35 (v3.6.0)
+│   ├── ns1-create-vks1-1.34                      # ✨ Create/upgrade VKS cluster to v1.34 (v3.5.0)
+│   ├── ns1-create-vks1-1.33                      # ✨ Create/upgrade VKS cluster to v1.33 (v3.4.0)
+│   ├── ns1-delete-vks1                           # 🗑️  Delete VKS cluster (with context cleanup)
+│   ├── ns1-delete-contexts                       # 🗑️  Delete all VCF and kubectl contexts
+│   ├── ns1-check-vks1 [--watch]                  # 🔍 Check VKS cluster readiness (with optional watch)
+│   ├── ns1-create-cert-manager                   # 📦 Install cert-manager addon
+│   ├── ns1-check-cert-manager                    # 🔍 Check cert-manager status
+│   └── ns1-delete-cert-manager-vks1              # 📦 Remove cert-manager addon
 │
-├── Utilities
-│   ├── vks-help                             # 📖 Quick reference guide
-│   └── fix-storage-quota-certificates.sh    # 🔧 Certificate maintenance
-│
-└── Documentation (Read these)
-    ├── README.md                            # 📖 This file
-    ├── ARCHITECTURE.md                      # 🏗️  System design and workflows
-    ├── SETUP_INSTRUCTIONS.md                # 📋 Step-by-step setup
-    ├── README_VKS_SCRIPTS.md                # 📚 Detailed script documentation
-    ├── README_CERTIFICATE_FIX.md            # 📚 Certificate fix guide
-    ├── README_CERT_MANAGER_INSTALL.md       # 📚 Cert-manager install guide
-    └── README_DELETE_CERT_MANAGER.md        # 📚 Cert-manager delete guide
+└── Documentation (Read this)
+    └── README.md                                  # 📖 Complete documentation (this file)
 ```
 
 ---
@@ -110,18 +105,18 @@ Before using these scripts, verify you have:
 
 ---
 
-### vks1-login
+### ns1-login-vks1
 
 **Login to the VKS cluster**
 
 ```bash
-./vks1-login
+./ns1-login-vks1
 ```
 
 **What it does:**
 1. Creates a VKS cluster context (if it doesn't exist)
 2. Selects the VKS cluster context
-3. Validates the connection
+3. Validates the connection with retry logic (handles upgrades)
 4. Displays cluster nodes
 
 **Prerequisites:**
@@ -129,45 +124,216 @@ Before using these scripts, verify you have:
 - VKS cluster must be in Ready state
 - Cluster must exist
 
+**Resilience:**
+- Automatically retries connection validation up to 60 seconds
+- Handles temporary cluster unavailability during upgrades
+- No manual retry needed if cluster is upgrading
+
 ---
 
-### vks1-create
+### ns1-check-namespace
 
-**Create a new VKS cluster**
+**Check Supervisor namespace configuration and readiness**
 
 ```bash
-./vks1-create
+./ns1-check-namespace
 ```
 
 **What it does:**
 1. Verifies Supervisor context is active
-2. Generates a VKS cluster manifest from configuration
-3. Applies the manifest to create the cluster
-4. Monitors cluster creation progress
-5. Displays configuration summary
+2. Checks if namespace exists
+3. Verifies storage classes are available
+4. Verifies VM classes (control plane and worker) are available
+5. Displays namespace labels and annotations
+6. Checks content library configuration (optional)
+7. Checks network policies
+8. Verifies RBAC configuration
+9. Provides readiness summary
+
+**Prerequisites:**
+- Must be logged into the Supervisor: `./ns1-login`
+- Supervisor namespace must exist
+
+**Output:**
+- Namespace configuration status
+- Available storage classes
+- Available VM classes
+- RBAC configuration
+- Overall readiness assessment
+- Guidance for creating VKS clusters
+
+**Use Cases:**
+- Verify namespace is properly configured before creating clusters
+- Troubleshoot missing storage or VM classes
+- Validate lab environment setup
+
+---
+
+### ns1-create-vks1-1.35
+
+**Create a new VKS cluster with Kubernetes v1.35 (builtin-generic-v3.6.0)**
+
+```bash
+./ns1-create-vks1-1.35
+```
+
+**What it does:**
+1. Verifies Supervisor context is active
+2. Checks if a cluster already exists (detects upgrade scenarios)
+3. Validates cluster readiness for upgrade (if upgrading)
+4. Generates a VKS cluster manifest for v1.35 with builtin-generic-v3.6.0
+5. Applies the manifest to create or upgrade the cluster
+6. Monitors cluster creation/upgrade progress
+7. Displays configuration summary
 
 **Prerequisites:**
 - Must be logged into the Supervisor first: `./ns1-login`
 - Supervisor namespace must exist and be configured
 - Storage policies must be configured in the namespace
 
+**Upgrade Support:**
+- If a cluster with the same name exists, this script detects it and performs an upgrade
+- Supports upgrading from v1.33 (v3.4.0), v1.34 (v3.5.0), or fresh creation
+- Displays "UPGRADE SCENARIO DETECTED" when upgrading an existing cluster
+- Prevents downgrades (v1.35 → v1.34) automatically
+- **Prevents direct v1.33 → v1.35 upgrades** - requires intermediate v1.34 upgrade first
+
+**Upgrade Constraints:**
+- ❌ Direct v1.33 → v1.35 **NOT SUPPORTED** (must go through v1.34)
+- ✅ v1.33 → v1.34 (allowed)
+- ✅ v1.34 → v1.35 (allowed)
+- ❌ Downgrade any version (e.g., v1.35 → v1.34) **NOT SUPPORTED**
+
 **Expected Time:**
-- ~10-15 minutes in nested environments
+- ~10-15 minutes in nested environments (fresh creation)
+- ~10-15 minutes for upgrades (may be faster depending on load)
 - ~2-5 minutes in physical environments
 
 **Output:**
 - Creates `vks.yaml` manifest file
-- Shows live progress of cluster creation
-- Press Ctrl+C to stop monitoring (cluster continues creating)
+- Shows live progress of cluster creation or upgrade
+- Press Ctrl+C to stop monitoring (cluster continues creating/upgrading)
 
 ---
 
-### vks1-delete
+### ns1-create-vks1-1.34
+
+**Create a new VKS cluster with Kubernetes v1.34 (builtin-generic-v3.5.0)**
+
+```bash
+./ns1-create-vks1-1.34
+```
+
+**What it does:**
+1. Verifies Supervisor context is active
+2. Checks if a cluster already exists (detects upgrade scenarios)
+3. Validates cluster readiness for upgrade (if upgrading)
+4. Generates a VKS cluster manifest for v1.34 with builtin-generic-v3.5.0
+5. Applies the manifest to create or upgrade the cluster
+6. Monitors cluster creation/upgrade progress
+7. Displays configuration summary
+
+**Prerequisites:**
+- Must be logged into the Supervisor first: `./ns1-login`
+- Supervisor namespace must exist and be configured
+- Storage policies must be configured in the namespace
+
+**Upgrade Support:**
+- If a cluster with the same name exists, this script detects it and performs an upgrade
+- Supports upgrading from v1.33 (v3.4.0) or fresh creation
+- Displays "UPGRADE SCENARIO DETECTED" when upgrading an existing cluster
+- Prevents downgrades automatically
+
+**Expected Time:**
+- ~10-15 minutes in nested environments (fresh creation)
+- ~10-15 minutes for upgrades
+- ~2-5 minutes in physical environments
+
+**Output:**
+- Creates `vks.yaml` manifest file
+- Shows live progress of cluster creation or upgrade
+- Press Ctrl+C to stop monitoring (cluster continues creating/upgrading)
+
+---
+
+### ns1-create-vks1-1.33
+
+**Create a new VKS cluster with Kubernetes v1.33 (builtin-generic-v3.4.0)**
+
+```bash
+./ns1-create-vks1-1.33
+```
+
+**What it does:**
+1. Verifies Supervisor context is active
+2. Checks if a cluster already exists (detects upgrade scenarios)
+3. Validates cluster readiness for upgrade (if upgrading)
+4. Generates a VKS cluster manifest for v1.33 with builtin-generic-v3.4.0
+5. Applies the manifest to create or upgrade the cluster
+6. Monitors cluster creation/upgrade progress
+7. Displays configuration summary
+
+**Prerequisites:**
+- Must be logged into the Supervisor first: `./ns1-login`
+- Supervisor namespace must exist and be configured
+- Storage policies must be configured in the namespace
+
+**Upgrade Support:**
+- If a cluster with the same name exists, this script detects it and performs an upgrade
+- Designed as the base/oldest version for upgrade testing
+- Can be used as a starting point to upgrade to v1.34 or v1.35
+- Displays "UPGRADE SCENARIO DETECTED" when upgrading an existing cluster
+
+**Expected Time:**
+- ~10-15 minutes in nested environments (fresh creation)
+- ~10-15 minutes for upgrades
+- ~2-5 minutes in physical environments
+
+**Output:**
+- Creates `vks.yaml` manifest file
+- Shows live progress of cluster creation or upgrade
+- Press Ctrl+C to stop monitoring (cluster continues creating/upgrading)
+
+---
+
+### Upgrade Path and Version Matrix
+
+Choose the appropriate script based on your needs:
+
+| Starting Version | Script to Use | Target Version | Use Case |
+|---|---|---|---|
+| Fresh Start | `ns1-create-vks1-1.33` | v1.33 (v3.4.0) | Initial cluster, baseline for upgrades |
+| v1.33 | `ns1-create-vks1-1.34` | v1.34 (v3.5.0) | Upgrade to intermediate version |
+| v1.34 | `ns1-create-vks1-1.35` | v1.35 (v3.6.0) | Upgrade to latest version |
+| v1.33 | ❌ Cannot use 1.35 directly | ❌ Not supported | Must upgrade through v1.34 first |
+| Any Version | Same Script | Same Version | Idempotent - re-applying same version |
+
+**Upgrade Workflow Example (v1.33 → v1.34 → v1.35):**
+
+```bash
+# Step 1: Create cluster with v1.33
+./ns1-create-vks1-1.33
+# Wait for cluster to be ready
+
+# Step 2: Upgrade to v1.34
+./ns1-create-vks1-1.34
+# Script detects existing cluster and performs upgrade
+# Wait for upgrade to complete
+
+# Step 3: Upgrade to v1.35
+./ns1-create-vks1-1.35
+# Script detects existing cluster and performs upgrade
+# Wait for upgrade to complete
+```
+
+---
+
+### ns1-delete-vks1
 
 **Delete a VKS cluster**
 
 ```bash
-./vks1-delete
+./ns1-delete-vks1
 ```
 
 **What it does:**
@@ -176,77 +342,208 @@ Before using these scripts, verify you have:
 3. Prompts for confirmation before deletion
 4. Sends delete command
 5. Monitors deletion progress
+6. Automatically cleans up VKS cluster contexts (kubectl and VCF)
 
 **Prerequisites:**
 - Must be logged into the Supervisor first: `./ns1-login`
 - VKS cluster must exist
 - User must confirm deletion
 
+**Context Cleanup:**
+- Automatically deletes kubectl context: `vks1-ctx:vks1`
+- Automatically deletes VCF context: `vks1-ctx:vks1`
+- Prevents connection issues when recreating cluster with same name
+
 **Expected Time:**
 - ~5-10 minutes for deletion to complete
 
 ---
 
-### select-context
+### ns1-delete-contexts
 
-**Interactive context management**
+**Delete all Supervisor and VKS contexts**
 
 ```bash
-./select-context
+./ns1-delete-contexts
 ```
 
 **What it does:**
-1. Lists all available VCF contexts
-2. Presents menu of operations:
-   - Select a different context
-   - Refresh the current context
-   - Exit
+1. Lists all VCF contexts
+2. Lists all kubectl contexts
+3. Prompts for confirmation
+4. Optionally deletes the VKS cluster if it exists
+5. Deletes all VCF contexts
+6. Deletes all kubectl contexts
+7. Verifies deletion was successful
+8. Cleans up kubeconfig
 
-**Menu Options:**
-- **Option 1:** Interactively select a context from the list
-- **Option 2:** Refresh the current context with new credentials
-- **Option 3:** Exit the tool
+**Features:**
+- ✅ Lists contexts before deletion
+- ✅ Optional VKS cluster deletion (prompted)
+- ✅ Requires confirmation before any deletion
+- ✅ Reports what was deleted
+- ✅ Handles errors gracefully
+
+**Prerequisites:**
+- None (can be run anytime)
 
 **Use Cases:**
-- Switching between Supervisor and VKS cluster contexts
-- Refreshing expired authentication tokens (context expires after ~10 hours)
-- Viewing current context status
+- Clean slate before switching to different lab environment
+- Troubleshoot context-related connection issues
+- Full cleanup after labs complete
+- Reset all contexts and clusters
+
+**Typical Usage:**
+```bash
+./ns1-delete-contexts
+# Lists contexts
+# Asks: "Also delete the VKS cluster? (yes/no)"
+# Deletes all contexts (VCF and kubectl)
+# Shows summary of deleted items
+```
 
 ---
 
-### vks1-install-cert-manager
+### ns1-check-vks1
+
+**Check VKS cluster readiness status (with optional watch mode)**
+
+```bash
+# Single check
+./ns1-check-vks1
+
+# Continuous watch mode (20 minute timeout)
+./ns1-check-vks1 --watch
+```
+
+**Flags:**
+- `--watch` - Continuously monitor cluster until ready (timeout: 20 min, Ctrl+C to stop)
+
+**What it does:**
+1. Verifies Supervisor context is active
+2. Checks cluster existence
+3. Displays cluster condition status:
+   - Available (Ready)
+   - TopologyReconciled
+   - AddonsReconciled
+   - Paused status
+4. Shows node readiness
+5. Verifies critical addon pods (Antrea, vSphere-CSI)
+6. Determines overall cluster readiness
+7. **[Watch mode only]** Continuously updates status until ready or timeout
+
+**Prerequisites:**
+- Must be logged into the Supervisor: `./ns1-login`
+- VKS cluster must exist
+
+**Exit Codes:**
+- 0: ✅ Cluster is ready
+- 1: ⚠️ Cluster partially ready (addons reconciling) or watch timeout
+- 2: ❓ Unknown status
+
+**Watch Mode Behavior:**
+- Updates display every 5 seconds
+- Shows: Available, TopologyReconciled, AddonsReconciled, Phase, Elapsed time
+- Waits up to 20 minutes (1200 seconds)
+- Exits immediately when cluster becomes ready
+- User can press Ctrl+C to stop anytime
+- Provides diagnostic commands on timeout
+
+**Use Cases:**
+- Monitor cluster creation/upgrade progress
+- Verify cluster is ready before deployments
+- Troubleshoot cluster issues
+- Automate operational checks
+- Real-time monitoring during creation/upgrades
+
+**Diagnostic Commands:**
+Script includes 8 diagnostic commands for troubleshooting addon issues:
+- Check detailed cluster status
+- View all cluster conditions
+- Check AddonsReconciled condition specifically
+- Check addon resources
+- Check Antrea (CNI) plugin status
+- Check vSphere-CSI (Storage) status
+- Check for reconciliation events
+- Monitor addon reconciliation in real-time
+
+---
+
+### ns1-create-cert-manager
 
 **Install cert-manager addon on VKS cluster**
 
 ```bash
-./vks1-install-cert-manager
+./ns1-create-cert-manager
 ```
 
 **What it does:**
 1. Verifies Supervisor context is valid
-2. Verifies VKS cluster exists and is ready
-3. Fetches the latest available cert-manager version
-4. Generates the data values configuration
-5. Installs the cert-manager addon
-6. Monitors the installation progress
-7. Verifies the installation in the cluster
+2. Verifies VKS cluster exists and is fully ready
+3. **Checks if cert-manager is already installed** (skips if exists)
+4. Fetches the latest available cert-manager version
+5. Generates the data values configuration
+6. Installs the cert-manager addon
+7. Monitors the installation progress
+8. Verifies the installation in the cluster
 
 **Prerequisites:**
 - Must be logged into the Supervisor: `./ns1-login`
-- VKS cluster must exist: `./vks1-create`
-- VKS cluster should be in Ready state
+- VKS cluster must exist: `./ns1-create-vks1-*`
+- VKS cluster must be fully ready (Available=True, AddonsReconciled=True)
+- Cluster must not already have cert-manager (script will skip if it does)
+
+**Cluster Readiness Check:**
+- ✅ Validates Available condition is True
+- ✅ Validates AddonsReconciled condition is True
+- ⚠️ Fails if cluster not fully ready (suggests waiting)
+
+**Existing Installation Handling:**
+- ✅ Detects if cert-manager is already installed
+- ✅ Skips installation if addon exists
+- ✅ Shows current addon status
+- ✅ Suggests using `ns1-check-cert-manager` for detailed status
 
 **Typical Installation Time:**
-- ~2-5 minutes
+- ~2-5 minutes (if installing)
+- ~5 seconds (if already installed)
 
 ---
 
-### vks1-delete-cert-manager
+### ns1-check-cert-manager
+
+**Check cert-manager status and health**
+
+```bash
+./ns1-check-cert-manager
+```
+
+**What it does:**
+1. Verifies Supervisor context is valid
+2. Verifies VKS cluster exists
+3. Checks if cert-manager addon is installed
+4. Displays addon installation status
+5. Verifies cert-manager pods are running
+6. Shows services and pod health summary
+
+**Prerequisites:**
+- Must be logged into the Supervisor: `./ns1-login`
+- VKS cluster must exist
+
+**Output:**
+- Addon installation status (Ready/not installed)
+- Pod deployment status
+- Service configuration
+- Pod health summary
+
+---
+
+### ns1-delete-cert-manager-vks1
 
 **Remove cert-manager addon from VKS cluster**
 
 ```bash
-./vks1-delete-cert-manager
+./ns1-delete-cert-manager-vks1
 ```
 
 **What it does:**
@@ -322,60 +619,102 @@ vi vks-lab.conf
 
 ## Typical Workflows
 
-### Workflow 1: Create and Access a VKS Cluster
+### Workflow 1: Create and Access a VKS Cluster (Latest v1.35)
 
 ```bash
 # 1. Login to Supervisor
 ./ns1-login
 
-# 2. Create a new VKS cluster (10-15 minutes)
-./vks1-create
+# 2. Create a new VKS cluster with v1.35 (10-15 minutes)
+./ns1-create-vks1-1.35
 
-# 3. When cluster is ready, login to it
-./vks1-login
+# 3. Monitor cluster creation with watch mode (in separate terminal optional)
+./ns1-check-vks1 --watch
+# Wait until cluster is ready or timeout
 
-# 4. Deploy applications
+# 4. Single status check (alternative to watch)
+./ns1-check-vks1
+
+# 5. When cluster is ready, login to it
+./ns1-login-vks1
+
+# 6. Deploy applications
 kubectl apply -f my-app.yaml
 kubectl get pods
 
-# 5. When done, switch back to Supervisor
+# 7. When done, switch back to Supervisor
 ./ns1-login
 
-# 6. Delete the cluster
-./vks1-delete
+# 8. Delete the cluster
+./ns1-delete-vks1
+# Automatically cleans up contexts
+
+# 9. (Optional) Clean up all contexts
+./ns1-delete-contexts
 ```
 
-### Workflow 2: Install and Use Cert Manager
+### Workflow 2: Test Kubernetes Version Upgrades (v1.33 → v1.34 → v1.35)
+
+```bash
+# Phase 1: Create baseline cluster with v1.33
+./ns1-login
+./ns1-create-vks1-1.33
+
+# Monitor creation with watch mode (alternative: run in separate terminal)
+./ns1-check-vks1 --watch
+# Wait for cluster to be ready (10-15 minutes)
+
+# Phase 2: Upgrade to v1.34 (REQUIRED intermediate step)
+./ns1-create-vks1-1.34
+# Script detects existing cluster and performs upgrade
+# Wait for upgrade to complete (10-15 minutes)
+
+# Phase 3: Upgrade to v1.35 (final version)
+./ns1-create-vks1-1.35
+# Script detects existing cluster and performs upgrade
+# Wait for upgrade to complete
+
+# Monitor final status
+./ns1-check-vks1 --watch
+# Wait for cluster to fully reconcile
+
+# Access and test
+./ns1-login-vks1
+kubectl get nodes
+```
+
+**Important:** Direct upgrade from v1.33 to v1.35 is not supported. You must upgrade through v1.34 first.
+
+### Workflow 3: Install and Use Cert Manager
 
 ```bash
 # 1. Create a VKS cluster
 ./ns1-login
-./vks1-create
-./vks1-login
+./ns1-create-vks1-1.35
 
-# 2. Install cert-manager
-./ns1-login
-./vks1-install-cert-manager
+# 2. Monitor creation (optional, in separate terminal)
+./ns1-check-vks1 --watch
 
-# 3. Login to cluster and use cert-manager
-./vks1-login
+# 3. Check namespace configuration (optional verification)
+./ns1-check-namespace
+
+# 4. Install cert-manager (waits for cluster to be fully ready)
+./ns1-create-cert-manager
+
+# 5. Check cert-manager status and health
+./ns1-check-cert-manager
+
+# 6. Login to cluster and use cert-manager
+./ns1-login-vks1
 kubectl get all -n cert-manager
+kubectl get certificates -A
 
-# 4. When done, delete cert-manager
+# 7. When done, delete cert-manager
 ./ns1-login
-./vks1-delete-cert-manager
-```
+./ns1-delete-cert-manager-vks1
 
-### Workflow 3: Refresh Expired Context
-
-```bash
-# If you see "401 Unauthorized" error:
-./select-context
-# Choose option 2: Refresh the current context
-
-# Or simply re-login:
-./ns1-login
-./vks1-login
+# 8. Verify deletion
+./ns1-check-cert-manager
 ```
 
 ### Workflow 4: Just Explore the Supervisor
@@ -388,11 +727,78 @@ kubectl get all -n cert-manager
 kubectl get nodes
 kubectl get namespaces
 kubectl get storageclass
-kubectl get cluster
+kubectl get clusters
 
 # 3. View cluster details
 kubectl describe cluster vks1
 ```
+
+---
+
+## Script Flags and Options
+
+### Available Script Flags
+
+| Script | Flag | Description | Example |
+|--------|------|-------------|---------|
+| `ns1-check-vks1` | `--watch` | Watch mode: monitor until ready or timeout (20 min) | `./ns1-check-vks1 --watch` |
+| `ns1-delete-contexts` | N/A | Includes interactive prompts for deletion | `./ns1-delete-contexts` |
+
+### Flag Details
+
+#### `ns1-check-vks1 --watch`
+
+Continuously monitors cluster readiness with automatic updates every 5 seconds:
+
+```bash
+./ns1-check-vks1 --watch
+```
+
+**Behavior:**
+- Shows real-time status: Available, TopologyReconciled, AddonsReconciled
+- Updates every 5 seconds with timestamp
+- Shows elapsed time vs 20-minute timeout
+- Exits automatically when cluster is ready
+- User can press Ctrl+C to stop anytime
+- Provides diagnostic commands if timeout reached
+
+**Display Example:**
+```
+[14:32:15] A:True R:False AD:False | Phase:Provisioned | Elapsed:  15s/1200s
+[14:32:20] A:True R:True  AD:False | Phase:Provisioned | Elapsed:  20s/1200s
+[14:32:25] A:True R:True  AD:True  | Phase:Provisioned | Elapsed:  25s/1200s
+
+✅ CLUSTER IS READY!
+Cluster became ready after 25 seconds
+```
+
+---
+
+## Cluster Readiness Validation
+
+The cluster creation and cert-manager scripts perform comprehensive readiness checks:
+
+### Before Cluster Upgrade
+
+The `ns1-create-vks1-*` scripts validate:
+- ✅ Cluster exists
+- ✅ Cluster is Available (infrastructure ready)
+- ✅ Cluster is TopologyReconciled (cluster objects reconciled)
+- ✅ Cluster AddonsReconciled (CNI, storage, all addons ready)
+- ✅ Not in Paused state
+- ✅ No downgrade attempts (prevents data loss)
+- ✅ Upgrade path is supported (v1.33→v1.35 blocked, must use v1.34 intermediate)
+
+### Before Cert-Manager Installation
+
+The `ns1-create-cert-manager` script validates:
+- ✅ Supervisor context is valid
+- ✅ Cluster exists
+- ✅ Cluster is Available (Available=True)
+- ✅ Cluster AddonsReconciled (AddonsReconciled=True)
+- ✅ Cert-manager not already installed
+
+If validation fails, script provides clear guidance on what to do next.
 
 ---
 
@@ -407,7 +813,7 @@ kubectl describe cluster vks1
 **Error: "VKS cluster not found"**
 - Verify the cluster name in `vks-lab.conf`
 - Check if the cluster has already been deleted
-- Use `kubectl get cluster` to see available clusters
+- Use `kubectl get clusters` to see available clusters
 
 **Error: "SSH connection failed" or "Network unreachable"**
 - Check if the Supervisor IP in `vks-lab.conf` is correct
@@ -420,8 +826,7 @@ kubectl describe cluster vks1
 
 **Error: "401 Unauthorized"**
 - Your context token has expired
-- Run: `./select-context` and choose option 2 to refresh
-- Or re-run: `./ns1-login` or `./vks1-login`
+- Run: `./ns1-login` or `./ns1-login-vks1` to refresh
 
 **Error: "Authentication failed"**
 - Verify credentials in `vks-lab.conf`
@@ -445,7 +850,7 @@ kubectl describe cluster vks1
 **Cert-manager installation timeout**
 - Addon is still installing; check status later with:
   ```bash
-  vcf addon install list --cluster-name vks1 -n ns1
+  ./ns1-check-cert-manager
   ```
 
 ---
@@ -464,8 +869,8 @@ kubectl describe cluster vks1
 **Error: "Scripts are not executable"**
 - Fix permissions:
   ```bash
-  chmod +x ns1-login vks1-login vks1-create vks1-delete select-context
-  chmod +x vks1-install-cert-manager vks1-delete-cert-manager vks-help
+  chmod +x ns1-login ns1-login-vks1 ns1-create-vks1-* ns1-delete-vks1 ns1-check-vks1
+  chmod +x ns1-create-cert-manager ns1-check-cert-manager ns1-delete-cert-manager-vks1
   ```
 
 ---
@@ -507,7 +912,7 @@ To create additional VKS clusters with different configurations:
 4. Modify scripts to accept a config file parameter (or source the appropriate config):
    ```bash
    export CONFIG_FILE="vks-lab-2.conf"
-   ./vks1-create  # (if modified to use $CONFIG_FILE)
+   ./ns1-create-vks1-1.35  # (if modified to use $CONFIG_FILE)
    ```
 
 ### Customizing Cluster Resources
@@ -516,7 +921,7 @@ Edit `vks-lab.conf` to change:
 
 - **Kubernetes version:**
   ```bash
-  CLUSTER_KUBERNETES_VERSION="v1.36"
+  CLUSTER_KUBERNETES_VERSION="v1.35"
   ```
 
 - **Control plane replicas:**
@@ -540,34 +945,6 @@ Edit `vks-lab.conf` to change:
   CLUSTER_STORAGE_CLASS="different-storage"
   STORAGE_SIZE="100Gi"
   ```
-
----
-
-## File Reference
-
-### Main Documentation
-
-| File | Purpose |
-|------|---------|
-| `README.md` | This comprehensive guide (start here) |
-| `ARCHITECTURE.md` | System design, workflow diagrams, and context model |
-| `SETUP_INSTRUCTIONS.md` | Step-by-step setup and first-time usage |
-| `README_VKS_SCRIPTS.md` | Detailed script documentation and reference |
-
-### Specialized Documentation
-
-| File | Purpose |
-|------|---------|
-| `README_CERTIFICATE_FIX.md` | Guide for fixing expired storage quota certificates |
-| `README_CERT_MANAGER_INSTALL.md` | Detailed cert-manager installation guide |
-| `README_DELETE_CERT_MANAGER.md` | Detailed cert-manager deletion guide |
-
-### Quick Reference
-
-| File | Purpose |
-|------|---------|
-| `vks-help` | Quick reference guide (run: `./vks-help`) |
-| `vks-lab.conf` | Configuration file for all scripts |
 
 ---
 
@@ -626,19 +1003,9 @@ Scripts use colored output for clarity:
 
 ## Getting Help
 
-### View Quick Reference
-```bash
-./vks-help
-```
-
 ### Read Full Documentation
 ```bash
-cat README_VKS_SCRIPTS.md
-```
-
-### View Architecture & Workflow
-```bash
-cat ARCHITECTURE.md
+cat README.md
 ```
 
 ### Debug a Script
@@ -651,30 +1018,29 @@ bash -x ./ns1-login
 ## Learning Path
 
 ### Day 1: Get Familiar
-1. Read `SETUP_INSTRUCTIONS.md`
-2. Run `./vks-help`
-3. Run `./ns1-login`
-4. Explore: `kubectl get nodes`, `kubectl get namespaces`
+1. Read this README.md
+2. Run `./ns1-login`
+3. Explore: `kubectl get nodes`, `kubectl get namespaces`
 
 ### Day 2: Create Your First Cluster
 1. `./ns1-login`
-2. `./vks1-create` (wait for completion)
-3. `./vks1-login`
+2. `./ns1-create-vks1-1.35` (wait for completion)
+3. `./ns1-login-vks1`
 4. Try: `kubectl get pods -A`
 
 ### Day 3: Deploy Applications
-1. `./vks1-login`
+1. `./ns1-login-vks1`
 2. `kubectl apply -f my-app.yaml`
 3. Monitor your application
 
 ### Day 4: Advanced Topics
-1. Read `ARCHITECTURE.md` to understand the design
-2. Read `README_VKS_SCRIPTS.md` section on "Advanced Usage"
+1. Test cluster upgrades: `ns1-create-vks1-1.34` then `ns1-create-vks1-1.35`
+2. Install cert-manager: `ns1-create-cert-manager`
 3. Customize `vks-lab.conf` for different cluster sizes
 
 ### Day 5: Cleanup
 1. `./ns1-login`
-2. `./vks1-delete`
+2. `./ns1-delete-vks1`
 
 ---
 
@@ -683,7 +1049,7 @@ bash -x ./ns1-login
 - **Lab Environment:** VKS 3.6.2
 - **vSphere:** 9.0.2
 - **Kubernetes Version:** v1.35 (configurable)
-- **Script Version:** 1.0
+- **Script Version:** 2.0
 - **Last Updated:** May 2026
 
 ---
@@ -695,7 +1061,6 @@ bash -x ./ns1-login
 - **Kubernetes kubectl:** https://kubernetes.io/docs/reference/kubectl/
 - **Cert-manager:** https://cert-manager.io/
 - **VCF CLI:** Consult your VMware documentation
-- **Broadcom KB 424055 (Storage Quota Certificates):** https://knowledge.broadcom.com/external/article/424055
 
 ---
 
@@ -707,9 +1072,8 @@ The scripts automate the manual procedures, but understanding the concepts in th
 
 For script-specific issues:
 1. Check `Troubleshooting` section above
-2. Review the relevant README file
-3. Run the script with `bash -x` for detailed output
-4. Contact your lab administrator
+2. Run the script with `bash -x` for detailed output
+3. Contact your lab administrator
 
 ---
 

@@ -173,17 +173,36 @@ fi
 
 echo ""
 
-# Step 3: Validate connection
+# Step 3: Validate connection with retry logic (handles upgrade scenarios)
 log_step "Validating connection to VKS cluster..."
-if kubectl get nodes > /dev/null 2>&1; then
-    log_info "Connection validated successfully"
-    echo ""
-    log_step "VKS Cluster nodes:"
-    kubectl get nodes
-else
-    log_error "Failed to validate connection to VKS cluster"
-    exit 1
-fi
 
+VALIDATION_ATTEMPTS=0
+MAX_ATTEMPTS=12  # 12 attempts = 60 seconds (5 second intervals)
+RETRY_INTERVAL=5
+
+while [[ $VALIDATION_ATTEMPTS -lt $MAX_ATTEMPTS ]]; do
+    ((VALIDATION_ATTEMPTS++))
+    
+    if kubectl get nodes > /dev/null 2>&1; then
+        log_info "Connection validated successfully (attempt $VALIDATION_ATTEMPTS/$MAX_ATTEMPTS)"
+        echo ""
+        log_step "VKS Cluster nodes:"
+        kubectl get nodes
+        echo ""
+        log_info "Successfully logged into VKS Cluster: $CLUSTER_NAME"
+        exit 0
+    fi
+    
+    if [[ $VALIDATION_ATTEMPTS -lt $MAX_ATTEMPTS ]]; then
+        log_warn "Cluster not ready yet (attempt $VALIDATION_ATTEMPTS/$MAX_ATTEMPTS). Retrying in ${RETRY_INTERVAL}s..."
+        sleep $RETRY_INTERVAL
+    fi
+done
+
+# All retries exhausted
 echo ""
-log_info "Successfully logged into VKS Cluster: $CLUSTER_NAME"
+log_error "Failed to validate connection to VKS cluster after $MAX_ATTEMPTS attempts"
+log_warn "The cluster may be undergoing an upgrade or temporarily unavailable."
+log_warn "Try again in a few moments with: ./vks1-login"
+log_warn "Or check cluster status with: kubectl get clusters $CLUSTER_NAME"
+exit 1

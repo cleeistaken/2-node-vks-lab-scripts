@@ -36,10 +36,20 @@ log_step() {
     echo -e "${BLUE}[STEP]${NC} $1"
 }
 
-# Verify we're logged into the Supervisor
+# Verify we're logged into the Supervisor (not in VKS cluster context)
 verify_supervisor_context() {
     if ! kubectl get ns &>/dev/null; then
-        log_error "Not connected to Supervisor. Please run 'login-ns1' first."
+        log_error "Not connected to Supervisor. Please run 'ns1-login' first."
+        exit 1
+    fi
+    
+    # Check if we're accidentally in the VKS cluster context
+    CURRENT_CONTEXT=$(kubectl config current-context 2>/dev/null || echo "")
+    if [[ "$CURRENT_CONTEXT" == *"$CLUSTER_NAME"* ]] || [[ "$CURRENT_CONTEXT" == "$CLUSTER_CONTEXT:$CLUSTER_NAME" ]]; then
+        log_warn "You are currently in the VKS cluster context: $CURRENT_CONTEXT"
+        log_error "This script must be run from the Supervisor context"
+        log_info "Please run: ./ns1-login"
+        log_info "Then run: ./vks1-delete"
         exit 1
     fi
 }
@@ -102,3 +112,35 @@ done
 
 echo ""
 log_info "VKS Cluster deleted successfully: $CLUSTER_NAME"
+
+echo ""
+
+# Step 6: Clean up VKS cluster context
+log_step "Cleaning up VKS cluster contexts..."
+
+# Delete the cluster-specific context from kubectl config
+VKS_CONTEXT="${CLUSTER_CONTEXT}:${CLUSTER_NAME}"
+if kubectl config get-contexts "$VKS_CONTEXT" &>/dev/null; then
+    if kubectl config delete-context "$VKS_CONTEXT" &>/dev/null; then
+        log_info "✓ Kubectl context deleted: $VKS_CONTEXT"
+    else
+        log_warn "Could not delete kubectl context: $VKS_CONTEXT"
+    fi
+else
+    log_info "Kubectl context not found: $VKS_CONTEXT"
+fi
+
+# Delete the VCF context for the VKS cluster
+if vcf context list 2>/dev/null | grep -q "^${CLUSTER_CONTEXT}:${CLUSTER_NAME}"; then
+    if vcf context delete "${CLUSTER_CONTEXT}:${CLUSTER_NAME}" -y 2>/dev/null; then
+        log_info "✓ VCF context deleted: ${CLUSTER_CONTEXT}:${CLUSTER_NAME}"
+    else
+        log_warn "Could not delete VCF context: ${CLUSTER_CONTEXT}:${CLUSTER_NAME}"
+    fi
+else
+    log_info "VCF context not found: ${CLUSTER_CONTEXT}:${CLUSTER_NAME}"
+fi
+
+echo ""
+log_info "VKS cluster deletion complete!"
+
